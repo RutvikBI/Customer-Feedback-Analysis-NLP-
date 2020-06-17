@@ -1,12 +1,4 @@
----
-title: "Mktg Final Exam"
-author: "Rutvik Gavaskar"
-date: "5/4/2020"
-output:
-  html_document: default
-  pdf_document: default
-  word_document: default
----
+
 ```{r}
 # Step 0
 # Install pacman in case you don’t have pacman already installed. 
