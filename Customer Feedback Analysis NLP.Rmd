@@ -1,0 +1,1089 @@
+---
+title: "Mktg Final Exam"
+author: "Rutvik Gavaskar"
+date: "5/4/2020"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+```{r}
+# Step 0
+# Install pacman in case you don’t have pacman already installed. 
+if(!"pacman" %in% installed.packages()[,"Package"]) install.packages("pacman")
+```
+
+```{r}
+# Step 1 – add the required libraries and the data unless you have it already loaded
+# Install and load the required packages. 
+pacman::p_load(dplyr, ggplot2, tidytext, wordcloud2)
+pacman::p_load(tidyr, dplyr, stringr, data.table, sentimentr, ggplot2, text2vec, tm, ggrepel)
+                      
+# load the data unless you already have it loaded 
+# remember to use the stringsAsFactors = F argument, otherwise errors galore.
+
+# this dataset if provided, if you use others create it from the master set
+reviews_orig <- read.csv("B005BPZCUC_Reviews for Exam 2.csv", stringsAsFactors = FALSE, header = FALSE, fileEncoding="latin1")
+colnames(reviews_orig) <- as.character(unlist(reviews_orig[1,]))
+reviews_orig = reviews_orig[-1, ]
+
+#reviews_orig$date <- as.Date(reviews_orig$date,"%d/%b/%Y")
+```
+
+```{r}
+# create a rowid for the reviews
+review_df <- reviews_orig %>% mutate(id = row_number())
+
+# examine the structure 
+str(reviews_orig)
+```
+# Step 2 – define the lexicon and any changes needed for our context
+# get n rows – to see what we have in the lexicon – 
+# Tyler Rinker is the author of sentimentr
+```{r}
+nrow(lexicon::hash_sentiment_jockers_rinker) # seems like 11,710 words
+
+# words to replace – in this example, there are switch, brand names etc.
+replace_in_lexicon <- tribble(
+     ~x, ~y,
+     "huztler", 0,       # not in dictionary
+     "pepper", 0,      # not in dictionary
+     "red", 0,          # original score: -.6
+     "saver", 0, # not in dictionary
+)
+# create a new lexicon with modified sentiment
+review_lexicon <- lexicon::hash_sentiment_jockers_rinker %>%
+     filter(!x %in% replace_in_lexicon$x) %>%
+     bind_rows(replace_in_lexicon) %>%
+     setDT() %>%
+     setkey("x")
+```
+
+# Step 3 – start by getting the sentence level sentiment for testing 
+# get sentence-level sentiment
+```{r}
+sent_df <- review_df %>%
+     get_sentences() %>%
+     sentiment_by(by = c('id', 'author', 'date', 'stars', 'review_format'),  polarity_dt = review_lexicon)
+```
+# Step 4 – start by getting the sentence level sentiment for testing 
+# check the relationship between star rating and sentiment
+```{r}
+ggplot(sent_df, aes(x = stars, y = ave_sentiment, color = factor(stars), group = stars)) +
+     geom_boxplot() +
+     geom_hline(yintercept=0, linetype="dashed", color = "red") +
+     geom_text(aes(5.2, -0.05, label = "Neutral Sentiment", vjust = 0), size = 3, color = "red") +
+     guides(color = guide_legend(title="Star Rating")) +
+     ylab("Average Sentiment") +
+     xlab("Review Star Rating") +
+     ggtitle("Sentiment of Amazon Reviews, by Star Rating") 
+```
+######################Part 2
+```{r}
+#split dataset as per ratings
+lst <- split(reviews_orig,reviews_orig$stars<4)
+pos_reviews <- as.data.frame(lst[1])
+neg_reviews <- as.data.frame(lst[2])
+names(pos_reviews)[names(pos_reviews)  == "FALSE.stars"] <- "stars"
+names(pos_reviews)[names(pos_reviews)  == "FALSE.comments"] <- "comments"
+names(neg_reviews)[names(neg_reviews)  == "TRUE.stars"] <- "stars"
+names(neg_reviews)[names(neg_reviews)  == "TRUE.comments"] <- "comments"
+# select only the stars and comments from the data and examine it
+pos_reviews <-pos_reviews %>% select(stars, comments)
+pos_reviews$ID <- seq.int(nrow(pos_reviews))   #Adding ID column
+glimpse(pos_reviews)
+neg_reviews <-neg_reviews %>% select(stars, comments)
+neg_reviews$ID <- seq.int(nrow(neg_reviews))   #Adding ID column
+glimpse(neg_reviews)
+```
+
+
+```{r}
+# Step 2 – delete all undesirable words, here we only delete things that may bias analyses
+# adjust this list as you need it, basically eliminate all undesirable words
+undesirable_words <- c("saver", "onion", "tomato","lemon","fridge", "garlic","onions","container", "pepper","plastic", "half", "lemons", "product", "time", "close","time", "store", "bought", "tomatoes", "grapefruit", "refrigerator", "days", "easily", "easy","item", "peppers", "bottom", "storage","savers", "perfect", "containers", "lime", "limes", "savers", "keeper", "pieces", "food","makes", "save", "keeping", "love", "nice", "holder", "week", "save", "hold", "bags", "produce", "clean", "helps", "vegetable", "fruit", "wrap", "veggies", "holds")
+
+# check out a small sample of stop words, randomly
+head(sample(stop_words$word, 15), 15)
+```
+
+
+```{r}
+# Step 3 – unnest the comments, remove all stop and undesirable words and words smaller       # than 3 characters and examine the result
+#unnest and remove stop, undesirable and short words
+pos_reviews_filtered <- pos_reviews %>%
+    unnest_tokens(word, comments) %>%
+    anti_join(stop_words) %>%
+    distinct() %>%
+    filter(!word %in% undesirable_words) %>%
+    filter(nchar(word) > 3)
+
+dim(pos_reviews_filtered)
+
+neg_reviews_filtered <- neg_reviews %>%
+    unnest_tokens(word, comments) %>%
+    anti_join(stop_words) %>%
+    distinct() %>%
+    filter(!word %in% undesirable_words) %>%
+    filter(nchar(word) > 3)
+
+dim(neg_reviews_filtered)
+```
+
+```{r}
+# Step 4 – get the full word count from the lyrics and quickly examine the results
+
+pos_reviews_full_word_count <- pos_reviews_filtered %>%
+     unnest_tokens(word, word) %>%
+     group_by(stars) %>%
+     summarise(num_words = n()) %>%
+     arrange(desc(num_words)) 
+
+neg_reviews_full_word_count <- neg_reviews_filtered %>%
+     unnest_tokens(word, word) %>%
+     group_by(stars) %>%
+     summarise(num_words = n()) %>%
+     arrange(desc(num_words)) 
+
+
+pos_reviews_full_word_count
+
+
+neg_reviews_full_word_count
+```
+```{r}
+# Step 5 – plot the most commonly used words in the lyrics
+pos_reviews_filtered %>%
+     count(word, sort = TRUE) %>%
+     top_n(10) %>%
+     ungroup() %>%
+     mutate(word = reorder(word, n)) %>%
+     ggplot() +
+     geom_col(aes(word, n)) +
+     xlab("") + 
+     ylab("Word Count") +
+     ggtitle("Most Frequently Used Words in Postive Reviews ") +
+     coord_flip() 
+
+# Step 5 – plot the most commonly used words in the lyrics
+neg_reviews_filtered %>%
+     count(word, sort = TRUE) %>%
+     top_n(10) %>%
+     ungroup() %>%
+     mutate(word = reorder(word, n)) %>%
+     ggplot() +
+     geom_col(aes(word, n)) +
+     xlab("") + 
+     ylab("Word Count") +
+     ggtitle("Most Frequently Used Words Negative Reviews") +
+     coord_flip()
+```
+
+```{r}
+# Step 6 – create a cool wordcloud of the words in the lyrics
+pos_reviews_word_counts <- pos_reviews_filtered %>% count(word, sort = TRUE) 
+
+wordcloud2(pos_reviews_word_counts[1:300, ], size = .5)
+
+neg_reviews_word_counts <- neg_reviews_filtered %>% count(word, sort = TRUE) 
+
+wordcloud2(neg_reviews_word_counts[1:300, ], size = .5)
+```
+
+# Step 4 –GloVe (Global Vectors for Word Representation). This step does two things.
+# First, we calculate a contextual representation of a word in a vector form
+# Similar words will have vectors that are similar or close to each other,
+# while words that are different will be much further away.
+# Second we use an unsupervised learning on n-gram / dimensionality reduction 
+# create lists of reviews split into individual words (iterator over tokens)
+```{r include=FALSE}
+pacman::p_load(tidyr, dplyr, stringr, data.table, sentimentr, ggplot2, text2vec, tm, ggrepel)
+
+tokens <- space_tokenizer(pos_reviews$comments %>% tolower() %>% removePunctuation())
+
+# Create vocabulary. Terms will be unigrams (simple words). 
+
+it <- itoken(tokens, progressbar = FALSE)
+vocab <- create_vocabulary(it)
+ 
+
+# prune (remove) words that appear less than 3 times
+vocab <- prune_vocabulary(vocab, term_count_min = 3L)
+ 
+# Use our filtered vocabulary
+vectorizer <- vocab_vectorizer(vocab)
+ 
+# use skip gram window of 5 for context words
+tcm <- create_tcm(it, vectorizer, skip_grams_window = 5L)
+ 
+
+# fit the model. It can take several minutes based on how much data you have
+glove = GloVe$new(rank = 100, x_max = 5)
+glove$fit_transform(tcm, n_iter = 20)
+
+# get the processed word vector
+word_vectors = glove$components
+```
+
+
+# Step 5 – check which words have contextual similarity, expand to 20 if there are too 
+# many irrelevant words 
+# check for nintendo first
+```{r}
+pos_reviews_data <- word_vectors[, "saver", drop = F] 
+
+# cosine similarity between word vectors tells us how similar they are
+cos_sim = sim2(x = t(word_vectors), y = t(pos_reviews_data), method = "cosine", norm = "l2")
+head(sort(cos_sim[,1], decreasing = TRUE), 10)
+```
+# Step 6 – implement a quick t-SNE to visualize reviews by similarity of words 
+# load packages
+```{r}
+pacman::p_load(tm, Rtsne, tibble, tidytext, scales)
+ 
+#create vector of words to keep, before applying tsne (remove stop words)
+keep_words <- setdiff(colnames(word_vectors), stopwords())
+ 
+# keep words in vector
+word_vec <- word_vectors[, keep_words]
+
+# prepare data frame to train
+train_df <- data.frame(t(word_vec)) %>% rownames_to_column("word")
+ 
+# train tsne for visualization
+tsne <- Rtsne(train_df[,-1], dims = 2, perplexity = 50, verbose=TRUE, max_iter = 500)
+
+#  t-SNE maps high dimensional data such as word embedding into a lower dimension      #  in such that the distance between two words roughly describe the similarity.                                           #  Additionally, t-SNE begins to create naturally forming clusters.
+
+# Interpretation of a t-SNE is straightforward 
+# Similar objects (or words) appear nearby each other in the plot and
+# dissimilar objects appear far away from each other.
+```
+
+# Step 7 – plot the t-SNE and examine it
+# create plot
+```{r}
+set.seed(12345)
+
+colors = rainbow(length(unique(train_df$word)))
+names(colors) = unique(train_df$word)
+ 
+ plot_df <- data.frame(tsne$Y) %>% mutate(
+         word = train_df$word,
+         col = colors[train_df$word]
+     ) %>% left_join(vocab, by = c("word" = "term")) %>%
+     filter(doc_count >= 10)
+ 
+ggplot(plot_df, aes(X1, X2)) +
+     geom_text(aes(X1, X2, label = word, color = col), size = 3) +
+     xlab("") + ylab("") +
+     theme(legend.position = "none") 
+```
+
+# Step 3 – start by getting the sentence level sentiment for testing 
+# get sentence-level sentiment
+```{r}
+
+# create a new lexicon with modified sentiment
+nrow(lexicon::hash_sentiment_jockers_rinker)
+
+review_lexicon <- lexicon::hash_sentiment_jockers_rinker
+
+sent_df <- pos_reviews %>%
+     get_sentences() %>%
+     sentiment_by(by = c('ID', 'comments'),  polarity_dt = review_lexicon)
+```
+
+
+# Step 8 – calculate word level sentiment and overlay these on the t-SNE
+# calculate word-level sentiment
+```{r}
+word_sent <- sent_df %>%
+     select(ID, comments, ave_sentiment) %>%
+     unnest_tokens(word, comments) %>%
+     group_by(word) %>%
+     summarise(
+         count = n(),
+         avg_sentiment = mean(ave_sentiment),
+         sum_sentiment = sum(ave_sentiment),
+         sd_sentiment = sd(ave_sentiment)) %>%
+         anti_join(stop_words, by = "word")
+# remove stop words
+# filter to words that appear at least 5 times
+pd_sent <- plot_df %>%
+     left_join(word_sent, by = "word") %>%
+     drop_na() %>%
+     filter(count >=5)
+```
+# Step 9 – Plot the results
+```{r}
+ggplot(pd_sent, aes(X1, X2)) +
+   geom_point(aes(X1, X2, size = count, alpha = .1, color = avg_sentiment)) +
+   geom_text(aes(X1, X2, label = word), size = 2) +
+   scale_colour_gradient2(low = muted("red"), mid = "white",
+                          high = muted("blue"), midpoint = 0) +
+   scale_size(range = c(5, 20)) +
+   xlab("") + ylab("") +
+   ggtitle("2-dimensional t-SNE Mapping of Word Vectors") +
+   guides(color = guide_legend(title="Avg. Sentiment"), size = guide_legend(title = "Frequency"), alpha = NULL) +
+     scale_alpha(range = c(1, 1), guide = "none")
+```
+
+########################################
+
+
+```{r include=FALSE}
+tokens <- space_tokenizer(neg_reviews$comments %>% tolower() %>% removePunctuation())
+
+# Create vocabulary. Terms will be unigrams (simple words). 
+
+it <- itoken(tokens, progressbar = FALSE)
+vocab <- create_vocabulary(it)
+ 
+
+# prune (remove) words that appear less than 3 times
+vocab <- prune_vocabulary(vocab, term_count_min = 3L)
+ 
+# Use our filtered vocabulary
+vectorizer <- vocab_vectorizer(vocab)
+ 
+# use skip gram window of 5 for context words
+tcm <- create_tcm(it, vectorizer, skip_grams_window = 5L)
+ 
+
+# fit the model. It can take several minutes based on how much data you have
+glove = GloVe$new(rank = 100, x_max = 5)
+glove$fit_transform(tcm, n_iter = 20)
+
+# get the processed word vector
+word_vectors = glove$components
+```
+
+
+# Step 5 – check which words have contextual similarity, expand to 20 if there are too 
+# many irrelevant words 
+# check for nintendo first
+```{r}
+neg_reviews_data <- word_vectors[, "saver", drop = F] 
+
+# cosine similarity between word vectors tells us how similar they are
+cos_sim = sim2(x = t(word_vectors), y = t(pos_reviews_data), method = "cosine", norm = "l2")
+head(sort(cos_sim[,1], decreasing = TRUE), 10)
+```
+# Step 6 – implement a quick t-SNE to visualize reviews by similarity of words 
+# load packages
+```{r}
+set.seed(12345)
+#pacman::p_load(tm, Rtsne, tibble, tidytext, scales)
+ 
+#create vector of words to keep, before applying tsne (remove stop words)
+keep_words <- setdiff(colnames(word_vectors), stopwords())
+ 
+# keep words in vector
+word_vec <- word_vectors[, keep_words]
+
+# prepare data frame to train
+train_df <- data.frame(t(word_vec)) %>% rownames_to_column("word")
+ 
+# train tsne for visualization
+tsne <- Rtsne(train_df[,-1], dims = 2, perplexity = 40, verbose=TRUE, max_iter = 500)
+
+#  t-SNE maps high dimensional data such as word embedding into a lower dimension      #  in such that the distance between two words roughly describe the similarity.                                           #  Additionally, t-SNE begins to create naturally forming clusters.
+
+# Interpretation of a t-SNE is straightforward 
+# Similar objects (or words) appear nearby each other in the plot and
+# dissimilar objects appear far away from each other.
+```
+
+# Step 7 – plot the t-SNE and examine it
+# create plot
+```{r}
+colors = rainbow(length(unique(train_df$word)))
+names(colors) = unique(train_df$word)
+ 
+ plot_df <- data.frame(tsne$Y) %>% mutate(
+         word = train_df$word,
+         col = colors[train_df$word]
+     ) %>% left_join(vocab, by = c("word" = "term")) %>%
+     filter(doc_count >= 5)
+ 
+ggplot(plot_df, aes(X1, X2)) +
+     geom_text(aes(X1, X2, label = word, color = col), size = 3) +
+     xlab("") + ylab("") +
+     theme(legend.position = "none") 
+```
+
+# Step 3 – start by getting the sentence level sentiment for testing 
+# get sentence-level sentiment
+```{r}
+
+# create a new lexicon with modified sentiment
+nrow(lexicon::hash_sentiment_jockers_rinker)
+
+review_lexicon <- lexicon::hash_sentiment_jockers_rinker
+
+sent_df <- neg_reviews %>%
+     get_sentences() %>%
+     sentiment_by(by = c('ID', 'comments'),  polarity_dt = review_lexicon)
+```
+
+
+# Step 8 – calculate word level sentiment and overlay these on the t-SNE
+# calculate word-level sentiment
+```{r}
+word_sent <- sent_df %>%
+     select(ID, comments, ave_sentiment) %>%
+     unnest_tokens(word, comments) %>%
+     group_by(word) %>%
+     summarise(
+         count = n(),
+         avg_sentiment = mean(ave_sentiment),
+         sum_sentiment = sum(ave_sentiment),
+         sd_sentiment = sd(ave_sentiment)) %>%
+         anti_join(stop_words, by = "word")
+# remove stop words
+# filter to words that appear at least 5 times
+pd_sent <- plot_df %>%
+     left_join(word_sent, by = "word") %>%
+     drop_na() %>%
+     filter(count >=5)
+```
+# Step 9 – Plot the results
+```{r}
+ggplot(pd_sent, aes(X1, X2)) +
+   geom_point(aes(X1, X2, size = count, alpha = .1, color = avg_sentiment)) +
+   geom_text(aes(X1, X2, label = word), size = 3) +
+   scale_colour_gradient2(low = muted("red"), mid = "white",
+                          high = muted("blue"), midpoint = 0) +
+   scale_size(range = c(5, 20)) +
+   xlab("") + ylab("") +
+   ggtitle("2-dimensional t-SNE Mapping of Word Vectors") +
+   guides(color = guide_legend(title="Avg. Sentiment"), size = guide_legend(title = "Frequency"), alpha = NULL) +
+     scale_alpha(range = c(1, 1), guide = "none")
+```
+
+
+
+########################################
+
+```{r}
+# Step 1 – add the required libraries and the data unless you have it already loaded
+# Install and load the required packages. 
+pacman::p_load(dplyr, ggplot2, stringr, udpipe, lattice)
+                      
+
+```
+
+```{r}
+# udpipe needs a model file loaded. This file can be downloaded and needs to # be placed in the working directory for it to loaded, otherwise full path is # needed. This is an important step.  
+# MAKE SURE YOUR WORKING DIRECTORY IS SET TO WHERE THIS FILE IS LOCATED. 
+
+udmodel_english <- udpipe_load_model(file = "english-ewt-ud-2.5-191206.udpipe")
+
+
+```
+
+```{r}
+
+# Step 2 – count the number of total headlines by date and plot the results to examine
+pos_reviews %>% group_by(stars) %>% count() %>% arrange(desc(n))
+
+pos_reviews %>% group_by(stars) %>% count() %>% ggplot() + geom_line(aes(stars,n, group = 1))
+
+neg_reviews %>% group_by(stars) %>% count() %>% arrange(desc(n))
+
+neg_reviews %>% group_by(stars) %>% count() %>% ggplot() + geom_line(aes(stars,n, group = 1))
+
+```
+
+
+```{r}
+
+# Step 2 – count the number of total headlines by date and plot the results to examine
+reviews_orig %>% group_by(stars) %>% count() %>% arrange(desc(n))
+
+reviews_orig %>% group_by(stars) %>% count() %>% ggplot() + geom_line(aes(stars,n, group = 1))
+```
+
+```{r}
+# Step 4 – use udpipe to annotate the text in the headlines for 2016 and load into a frame   # this may take a while depending on how much data you are analyzing.                                                                    
+s1 <- udpipe_annotate(udmodel_english, pos_reviews$comments)
+x1 <- data.frame(s1)
+
+s2 <- udpipe_annotate(udmodel_english, neg_reviews$comments)
+x2 <- data.frame(s2)
+
+
+```
+
+```{r}
+# Step 5 – extract and display frequencies for universal parts of speech (upos) in text
+stats1 <- txt_freq(x1$upos)
+stats1$key <- factor(stats1$key, levels = rev(stats1$key))
+barchart(key ~ freq, data = stats1, col = "yellow", 
+         main = "UPOS (Universal Parts of Speech)\n frequency of occurrence Pre", 
+         xlab = "Freq")
+
+
+stats2 <- txt_freq(x2$upos)
+stats2$key <- factor(stats2$key, levels = rev(stats2$key))
+barchart(key ~ freq, data = stats2, col = "yellow", 
+         main = "UPOS (Universal Parts of Speech)\n frequency of occurrence Post", 
+         xlab = "Freq")
+
+```
+
+```{r}
+# Step 5 –extract and display most occurring nouns in the headlines
+## NOUNS – change the number from 25 to lower or higher as applicable.
+
+stats1 <- subset(x1, upos %in% c("NOUN")) 
+stats1 <- txt_freq(stats1$token)
+stats1$key <- factor(stats1$key, levels = rev(stats1$key))
+barchart(key ~ freq, data = head(stats1, 25), col = "cadetblue", main = "Most occurring nouns", xlab = "Freq")
+
+stats2 <- subset(x2, upos %in% c("NOUN")) 
+stats2 <- txt_freq(stats2$token)
+stats2$key <- factor(stats2$key, levels = rev(stats2$key))
+barchart(key ~ freq, data = head(stats2, 25), col = "cadetblue", main = "Most occurring nouns", xlab = "Freq")
+
+```
+
+```{r}
+# Step 6 –extract and display most occurring adjectives in the headlines
+
+## ADJECTIVES - change the number from 25 to lower or higher as applicable.
+
+stats1 <- subset(x1, upos %in% c("ADJ")) 
+stats1 <- txt_freq(stats1$token)
+stats1$key <- factor(stats1$key, levels = rev(stats1$key))
+barchart(key ~ freq, data = head(stats1, 25), col = "purple", main = "Most occurring adjectives", xlab = "Freq")
+
+stats2 <- subset(x2, upos %in% c("ADJ")) 
+stats2 <- txt_freq(stats2$token)
+stats2$key <- factor(stats2$key, levels = rev(stats2$key))
+barchart(key ~ freq, data = head(stats2, 25), col = "purple", main = "Most occurring adjectives", xlab = "Freq")
+
+```
+
+```{r}
+# Step 7 –extract and display most occurring verbs in the headlines
+
+## VERBS - change the number from 25 to lower or higher as applicable.
+
+stats1 <- subset(x1, upos %in% c("VERB")) 
+stats1 <- txt_freq(stats1$token)
+stats1$key <- factor(stats1$key, levels = rev(stats1$key))
+barchart(key ~ freq, data = head(stats1, 25), col = "gold", main = "Most occurring Verbs", xlab = "Freq")
+
+stats2 <- subset(x2, upos %in% c("VERB")) 
+stats2 <- txt_freq(stats2$token)
+stats2$key <- factor(stats2$key, levels = rev(stats2$key))
+barchart(key ~ freq, data = head(stats2, 25), col = "gold", main = "Most occurring Verbs", xlab = "Freq")
+
+```
+
+```{r}
+# Step 8 – Use RAKE (Rapid Automatic Keyword Extraction algorithm) to                            # determine key phrases in a body of text by analyzing the frequency of word appearance # and its co-occurrence with other words in the text.
+## RAKE - Adjust the frequency and the number of results by changing 3 and 25 ## appropriate numbers for your dataset.
+
+stats1 <- keywords_rake(x = x1, term = "lemma", group = "doc_id", relevant = x1$upos %in% c("NOUN", "ADJ"))
+
+stats1$key <- factor(stats1$keyword, levels = rev(stats1$keyword))
+barchart(key ~ rake, data = head(subset(stats1, freq > 3), 25), col = "red", main = "Keywords identified by RAKE", xlab = "Rake")
+
+
+stats2 <- keywords_rake(x = x2, term = "lemma", group = "doc_id", relevant = x2$upos %in% c("NOUN", "ADJ"))
+
+stats2$key <- factor(stats2$keyword, levels = rev(stats2$keyword))
+barchart(key ~ rake, data = head(subset(stats2, freq > 3), 25), col = "red", main = "Keywords identified by RAKE", xlab = "Rake")
+```
+
+```{r}
+# Step 9 – In English (and in many other languages a phrase can be formed simply with a # noun and a verb (e.g., cat meows) This may be useful for understanding context of a       # sentence or a review or headlines especially if they are clickbait like. This step is to just # extract top phrases that are keyword-topics.
+## display by plot a sequence of POS tags (noun phrases / verb phrases)
+## Adjust the frequency and the number of results by changing 3 and 25 
+## to appropriate numbers for your dataset. 
+## You can also change the ngram levels to higher than 2 (like 3 or 4) 
+## to get lengths of 3 word or 4 word combinations.
+
+x1$phrase_tag <- as_phrasemachine(x1$upos, type = "upos")
+stats <- keywords_phrases(x = x1$phrase_tag, term = tolower(x1$token), pattern = "(A|N)*N(P+D*(A|N)*N)*", is_regex = TRUE, detailed = FALSE)
+
+stats1 <- subset(stats1, ngram > 1 & freq > 3)
+
+stats1$key <- factor(stats1$keyword, levels = rev(stats1$keyword))
+
+barchart(key ~ freq, data = head(stats1, 25), col = "magenta", main = "Keywords - simple noun phrases", xlab = "Frequency")
+
+
+
+
+x2$phrase_tag <- as_phrasemachine(x2$upos, type = "upos")
+stats2 <- keywords_phrases(x = x2$phrase_tag, term = tolower(x2$token), pattern = "(A|N)*N(P+D*(A|N)*N)*", is_regex = TRUE, detailed = FALSE)
+
+stats2 <- subset(stats2, ngram > 1 & freq > 3)
+
+stats2$key <- factor(stats2$keyword, levels = rev(stats2$keyword))
+
+barchart(key ~ freq, data = head(stats2, 25), col = "magenta", main = "Keywords - simple noun phrases", xlab = "Frequency")
+```
+
+```{r}
+# Step 10 –it would be helpful to explore the words that appear next to each other. We can 
+# do this with just nouns and adjectives to explore # the patterns to get focus topic areas. # Adjust the ngram max levels if needed. It is set to 4 to indicate that we want 
+# co-occurrences within 3 words of each other.
+
+## Collocation identification – basically words following one another)
+stats1 <- keywords_collocation(x = x1, term = "token", group = c("doc_id", "paragraph_id", "sentence_id"), ngram_max = 4)
+
+
+stats2 <- keywords_collocation(x = x2, term = "token", group = c("doc_id", "paragraph_id", "sentence_id"), ngram_max = 4)
+```
+
+```{r}
+## How frequently do words occur in the same sentence (nouns and adjectives)
+stats1 <- cooccurrence(x = subset(x1, upos %in% c("NOUN", "ADJ")), term = "lemma", group = c("doc_id", "paragraph_id", "sentence_id"))
+
+stats2 <- cooccurrence(x = subset(x2, upos %in% c("NOUN", "ADJ")), term = "lemma", group = c("doc_id", "paragraph_id", "sentence_id"))
+```
+
+```{r}
+## Co-occurrences: How frequent do words follow one another
+stats1 <- cooccurrence(x = x1$lemma, relevant = x1$upos %in% c("NOUN", "ADJ"))
+stats2 <- cooccurrence(x = x2$lemma, relevant = x2$upos %in% c("NOUN", "ADJ"))
+
+```
+
+```{r}
+## Co-occurrences: How frequent do words follow one another even if we would ## skip 2 words in between. You can adjust this if you need to.
+
+stats1 <- cooccurrence(x = x1$lemma, relevant = x1$upos %in% c("NOUN", "ADJ"), skipgram = 2)
+stats2 <- cooccurrence(x = x2$lemma, relevant = x2$upos %in% c("NOUN", "ADJ"), skipgram = 2)
+#head(stats)
+
+```
+
+
+```{r}
+# Step 11 – it may be helpful to explore this visually instead of inspecting it in a table. To 
+# do this you will need the igraph library and the ggraph library. Load these with pacman.
+# adjust the number you would like displayed. It is now set to 25.
+
+pacman::p_load(igraph, ggraph)
+
+
+wordnetwork <- head(stats1, 25)
+wordnetwork <- graph_from_data_frame(wordnetwork)
+ggraph(wordnetwork, layout = "fr") + geom_edge_link(aes(width = cooc, edge_alpha = cooc), edge_colour = "red") +
+     geom_node_text(aes(label = name), col = "darkgreen", size = 4) +
+    # theme_graph(base_family = windowsFont("TT Arial")) +
+     theme(legend.position = "none") +
+     labs(title = "Co-occurrences within 3 words distance", subtitle = "Nouns & Adjectives")
+
+pacman::p_load(igraph, ggraph)
+
+
+wordnetwork <- head(stats2, 25)
+wordnetwork <- graph_from_data_frame(wordnetwork)
+ggraph(wordnetwork, layout = "fr") + geom_edge_link(aes(width = cooc, edge_alpha = cooc), edge_colour = "red") +
+     geom_node_text(aes(label = name), col = "darkgreen", size = 4) +
+   #  theme_graph(base_family = windowsFont("TT Arial")) +
+     theme(legend.position = "none") +
+     labs(title = "Co-occurrences within 3 words distance", subtitle = "Nouns & Adjectives")
+
+
+```
+
+# Step 1 – load the required libraries and the data
+
+```{r}
+library(tidyverse) # organize workflow and for all text work
+library(tidytext) # contains the NLP methods we need
+library(topicmodels) # for LDA topic modelling – our main package 
+library(tm) # general text mining functions, DTM work.
+library(SnowballC) # for stemming when needed.
+library(stringr) # for cleaning
+```
+#using read_csv instead of read.csv to avoid the stringAsFactors issue
+#read_csv is also known to be faster at reading large datasets 
+
+# Step 2 – Clean the data. This is an important step, check column names for your dataset
+```{r}
+#clean the review data, our reviews are in the ‘text’ column of the dataset
+pos_reviews$comments <- str_replace_all(pos_reviews$comments,"[^[:graph:]]", " ")
+neg_reviews$comments <- str_replace_all(neg_reviews$comments,"[^[:graph:]]", " ")
+```
+
+# Step 3– write a function that allows us to extract topic models using only TF and IDF 
+# Please make sure you copy paste the whole function if you plan without modifications. 
+# modifications. It is important to understand how this function works. 
+
+# First get the count of each word in each review
+# Second, get the number of words per text# input. 
+# Third, combine these dfs and get the tf_idf & order the words by degree of relevance
+# Finally, plot the 10 most informative terms per topic grouped by the grouping covariate
+
+#note that this approach is for those who know the details of the corpus.
+
+# function that takes in a dataframe and the name of the columns
+# with the document texts and the topic labels. If plot is set to
+# false it will return the tf-idf output rather than a plot.
+```{r}
+top_terms_by_topic_tfidf <- function(text_df, text_column, group_column, plot = T){
+    # name for the column we're going to unnest_tokens_ to
+    # (you only need to worry about enough stuff if you're
+    # writing a function using using tidyverse packages)
+    group_column <- enquo(group_column)
+    text_column <- enquo(text_column)
+    
+    # get the count of each word in each review
+    words <- text_df %>%
+      unnest_tokens(word, !!text_column) %>%
+      count(!!group_column, word) %>% 
+      ungroup()
+
+    # get the number of words per text
+    total_words <- words %>% 
+      group_by(!!group_column) %>% 
+      summarize(total = sum(n))
+
+    # combine the two dataframes we just made
+    words <- left_join(words, total_words)
+
+    # get the tf_idf & order the words by degree of relevance
+    tf_idf <- words %>%
+      bind_tf_idf(word, !!group_column, n) %>%
+      select(-total) %>%
+      arrange(desc(tf_idf)) %>%
+      mutate(word = factor(word, levels = rev(unique(word))))
+    
+    if(plot == T){
+        # convert "group" into a quote of a name
+        # (this is due to idiosyncrasies with calling ggplot2
+        # in functions)
+        group_name <- quo_name(group_column)
+        
+        # plot the 10 most informative terms per topic
+        tf_idf %>% 
+          group_by(!!group_column) %>% 
+          top_n(10) %>% 
+          ungroup %>%
+          ggplot(aes(word, tf_idf, fill = as.factor(group_name))) +
+          geom_col(show.legend = FALSE) +
+          labs(x = NULL, y = "tf-idf") +
+          facet_wrap(reformulate(group_name), scales = "free") +
+          coord_flip()
+    }else{
+        # return the entire tf_idf dataframe
+        return(tf_idf)
+    }
+}
+```
+
+
+
+
+
+
+
+# Step 4– get the top terms associated with each topic in our text. 
+# Choose and group the terms by the grouping covariate.
+
+# here we are using the stars as the grouping variable. 
+# if you use large datasets be aware of how this will affect your readability
+```{r}
+pos_reviews_tfidf_stars <- top_terms_by_topic_tfidf(text_df = pos_reviews, text_column = comments, group = stars, plot = F)
+
+
+pos_reviews_tfidf_stars  %>% 
+    group_by(stars) %>% 
+    top_n(5) %>% 
+    ungroup %>%
+     ggplot(aes(word, tf_idf, fill = stars)) +
+     geom_col(show.legend = FALSE) +
+     labs(x = NULL, y = "tf-idf") +
+     facet_wrap(~stars, ncol = 4, scales = "free", ) +
+     coord_flip()
+
+neg_reviews_tfidf_stars <- top_terms_by_topic_tfidf(text_df = neg_reviews, text_column = comments, group = stars, plot = F)
+
+
+neg_reviews_tfidf_stars  %>% 
+    group_by(stars) %>% 
+    top_n(5) %>% 
+    ungroup %>%
+     ggplot(aes(word, tf_idf, fill = stars)) +
+     geom_col(show.legend = FALSE) +
+     labs(x = NULL, y = "tf-idf") +
+     facet_wrap(~stars, ncol = 4, scales = "free", ) +
+     coord_flip()
+```
+############################################
+LDA
+
+#Step 1 – load the required libraries and the data
+```{r}
+library(tidyverse) # organize workflow and for all text work
+library(tidytext) # contains the NLP methods we need
+library(topicmodels) # for LDA topic modelling – our main package 
+library(tm) # general text mining functions, DTM work.
+library(SnowballC) # for stemming when needed.
+library(stringr) # for cleaning
+```
+```{r}
+#Step 3– write a function that allows us to extract topic models quickly and easily. Please # make sure you copy pate the whole function if you plan to use this function without 
+# modifications. It is important to understand how this function works. 
+
+# First this function creates a corpus from the text you provide
+# Second, the function will then use the tidytext package, which expects a corpus as the 
+# input. The corpus is just a type of data object. 
+
+# Third, the topic models are extracted based on how many were requested when the 
+# function was invoked.
+
+# Finally, the top 10 terms that best represent each topic are extracted and returned.
+# function to get & plot the most informative terms by a specified number
+# of topics, using LDA
+
+top_terms_by_topic_LDA <- function(input_text, # should be a column from a data frame
+                                   plot = T, # return a plot? TRUE by defult
+                                   number_of_topics = 4) # number of topics (4 by default)
+{    
+   # create a corpus (type of object expected by tm) and document term matrix
+    Corpus <- Corpus(VectorSource(input_text)) # make a corpus object
+    DTM <- DocumentTermMatrix(Corpus) # get the count of words/document
+
+    # remove any empty rows in our document term matrix (if there are any 
+    # we'll get an error when we try to run our LDA)
+    unique_indexes <- unique(DTM$i) # get the index of each unique value
+    DTM <- DTM[unique_indexes,] # get a subset of only those indexes
+    
+    # preform LDA & get the words/topic in a tidy text format
+    lda <- LDA(DTM, k = number_of_topics, control = list(seed = 1234))
+    topics <- tidy(lda, matrix = "beta")
+
+    # get the top ten terms for each topic, 
+    # yes I made up the word informativeness
+    top_terms <- topics  %>% # take the topics data frame and..
+      group_by(topic) %>% # treat each topic as a different group
+      top_n(10, beta) %>% # get the top 10 most informative words
+      ungroup() %>% # ungroup
+      arrange(topic, -beta) # arrange words in descending informativeness
+	
+    # if the user asks for a plot (TRUE by default)
+    if(plot == T){
+        # plot the top ten terms for each topic in order
+        top_terms %>% # take the top terms
+         mutate(term = reorder(term, beta)) %>% # sort terms by beta value 
+         ggplot(aes(term, beta, fill = factor(topic))) + # plot beta by theme
+         geom_col(show.legend = FALSE) + # as a bar plot
+         facet_wrap(~ topic, scales = "free") + # which each topic in a separate plot
+          labs(x = NULL, y = "Beta") + # no x label, change y label 
+          coord_flip() # turn bars sideways
+    }else{ 
+        # if the user does not request a plot
+        # return a list of sorted terms instead
+        return(top_terms)
+    }
+} 
+```
+
+
+#Step 4– Test out the function to ensure everything works by starting with two topics. 
+# This step also allows you to identify any irrelevant words that may need to be 
+# eliminated and added to a stop word list. 
+
+
+#get just two topics to see how things pan out, carefully check words to see 
+#what needs to be added to stop words.
+```{r}
+top_terms_by_topic_LDA(pos_reviews$comments, number_of_topics = 2)
+top_terms_by_topic_LDA(neg_reviews$comments, number_of_topics = 2)
+```
+
+
+
+
+
+
+
+#Step 5 – We are ready for the topic modeling now. Create a tidytext corpus 
+# Make a list of edited and customized stop words for our needs.  
+```{r}
+# pay attention to column names
+reviewsCorpus <- Corpus(VectorSource(pos_reviews$comments)) 
+reviewsDTM <- DocumentTermMatrix(reviewsCorpus)
+
+# convert the document term matrix to a tidytext corpus
+reviewsDTM_tidy <- tidy(reviewsDTM)
+
+# I'm going to add my own custom stop words that I don't think will be
+# very informative in these reviews. My first test topic model indicated that # I should add room and Chicago to the list. Case is not relevant 
+
+custom_stop_words <- tibble(word = c("saver", "onion", "tomato","lemon","fridge", "garlic","onions","container", "pepper","plastic", "half", "lemons", "product", "time", "close","time", "store", "bought", "tomatoes", "grapefruit", "refrigerator", "days", "easily", "easy","item", "peppers", "bottom", "storage","savers", "perfect", "containers", "lime", "limes", "savers", "keeper", "pieces", "food","makes", "save", "keeping", "love", "nice", "holder", "week", "save", "hold", "bags", "produce", "clean", "helps", "vegetable", "fruit", "wrap", "veggies", "holds"))
+
+# remove stopwords from the dataset of reviews
+reviewsDTM_tidy_cleaned <- reviewsDTM_tidy %>% # take our tidy dtm and...
+    anti_join(stop_words, by = c("term" = "word")) %>% # remove English stopwords and...
+    anti_join(custom_stop_words, by = c("term" = "word")) # remove my custom stopwords
+
+
+# reconstruct cleaned documents (so that each word shows up the correct number of times)
+cleaned_documents <- reviewsDTM_tidy_cleaned %>%
+    group_by(document) %>% 
+    mutate(terms = toString(rep(term, count))) %>%
+    select(document, terms) %>%
+    unique()
+
+# check out what the cleaned documents look like (should just be a bunch of content words)
+# in alphabetic order
+head(cleaned_documents)
+
+
+#Step 6 – Start obtaining topic models. If you know enough about the reviews you will 
+# have a great starting point in the number of topics sought, otherwise we will have to 
+# make several models.  
+
+#try out two topics, expand to 3 or 4 or more. I found three topics to be 
+# ideal in this specific 2k review set but in the larger set I needed 4.
+
+
+top_terms_by_topic_LDA(cleaned_documents, number_of_topics = 2)  
+
+top_terms_by_topic_LDA(cleaned_documents, number_of_topics = 3) 
+ 
+top_terms_by_topic_LDA(cleaned_documents, number_of_topics = 4)  
+
+
+
+# Step 7 – Stemming is a controversial topic when it comes to topic models. 
+# Some research indicates that stemming actually harms the creation of topic models, 
+# but some data scientists claim that stemming increases interpretability.  
+
+
+# stem the words (e.g. convert each word to its stem, where applicable)
+reviewsDTM_tidy_cleaned <- reviewsDTM_tidy_cleaned %>% 
+    mutate(stem = wordStem(term))
+
+# reconstruct our documents
+cleaned_documents <- reviewsDTM_tidy_cleaned %>%
+    group_by(document) %>% 
+    mutate(terms = toString(rep(stem, count))) %>%
+    select(document, terms) %>%
+    unique()
+
+#Step 8 – Revisit the topic models and create the stemmed word topic models.
+
+
+#try out the lower end of what was acceptable from step 6. This was 3 for me
+#I then tried 4 for the larger set which seemed to work well enough. 
+# now let's look at the new most informative terms
+
+top_terms_by_topic_LDA(cleaned_documents$terms, number_of_topics = 3)  
+
+top_terms_by_topic_LDA(cleaned_documents$terms, number_of_topics = 4)  
+```
+
+#Step 5 – We are ready for the topic modeling now. Create a tidytext corpus 
+# Make a list of edited and customized stop words for our needs.  
+```{r}
+# pay attention to column names
+reviewsCorpus <- Corpus(VectorSource(neg_reviews$comments)) 
+reviewsDTM <- DocumentTermMatrix(reviewsCorpus)
+
+# convert the document term matrix to a tidytext corpus
+reviewsDTM_tidy <- tidy(reviewsDTM)
+
+# I'm going to add my own custom stop words that I don't think will be
+# very informative in these reviews. My first test topic model indicated that # I should add room and Chicago to the list. Case is not relevant 
+
+custom_stop_words <- tibble(word = c("saver", "onion", "tomato","lemon","fridge", "garlic","onions","container", "pepper","plastic", "half", "lemons", "product", "time", "close","time", "store", "bought", "tomatoes", "grapefruit", "refrigerator", "days", "easily", "easy","item", "peppers", "bottom", "storage","savers", "perfect", "containers", "lime", "limes", "savers", "keeper", "pieces", "food","makes", "save", "keeping", "love", "nice", "holder", "week", "save", "hold", "bags", "produce", "clean", "helps", "vegetable", "fruit", "wrap", "veggies", "holds"))
+
+# remove stopwords from the dataset of reviews
+reviewsDTM_tidy_cleaned <- reviewsDTM_tidy %>% # take our tidy dtm and...
+    anti_join(stop_words, by = c("term" = "word")) %>% # remove English stopwords and...
+    anti_join(custom_stop_words, by = c("term" = "word")) # remove my custom stopwords
+
+
+# reconstruct cleaned documents (so that each word shows up the correct number of times)
+cleaned_documents <- reviewsDTM_tidy_cleaned %>%
+    group_by(document) %>% 
+    mutate(terms = toString(rep(term, count))) %>%
+    select(document, terms) %>%
+    unique()
+
+# check out what the cleaned documents look like (should just be a bunch of content words)
+# in alphabetic order
+head(cleaned_documents)
+
+
+#Step 6 – Start obtaining topic models. If you know enough about the reviews you will 
+# have a great starting point in the number of topics sought, otherwise we will have to 
+# make several models.  
+
+#try out two topics, expand to 3 or 4 or more. I found three topics to be 
+# ideal in this specific 2k review set but in the larger set I needed 4.
+
+
+top_terms_by_topic_LDA(cleaned_documents, number_of_topics = 2)  
+
+top_terms_by_topic_LDA(cleaned_documents, number_of_topics = 3) 
+ 
+top_terms_by_topic_LDA(cleaned_documents, number_of_topics = 4)  
+
+
+
+
+
+
+
+
+# Step 7 – Stemming is a controversial topic when it comes to topic models. 
+# Some research indicates that stemming actually harms the creation of topic models, 
+# but some data scientists claim that stemming increases interpretability.  
+
+
+# stem the words (e.g. convert each word to its stem, where applicable)
+reviewsDTM_tidy_cleaned <- reviewsDTM_tidy_cleaned %>% 
+    mutate(stem = wordStem(term))
+
+# reconstruct our documents
+cleaned_documents <- reviewsDTM_tidy_cleaned %>%
+    group_by(document) %>% 
+    mutate(terms = toString(rep(stem, count))) %>%
+    select(document, terms) %>%
+    unique()
+
+#Step 8 – Revisit the topic models and create the stemmed word topic models.
+
+
+#try out the lower end of what was acceptable from step 6. This was 3 for me
+#I then tried 4 for the larger set which seemed to work well enough. 
+# now let's look at the new most informative terms
+
+top_terms_by_topic_LDA(cleaned_documents$terms, number_of_topics = 3)  
+
+top_terms_by_topic_LDA(cleaned_documents$terms, number_of_topics = 4)  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
